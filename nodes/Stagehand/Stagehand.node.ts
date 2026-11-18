@@ -83,24 +83,39 @@ class ConnectedChatModelClient extends LLMClient {
 
 		const maxTokens = options.maxTokens ?? this.maxOutputTokens;
 		if (options.response_model) {
-			assert(
-				typeof model.withStructuredOutput === 'function',
-				'The connected Chat Model does not support structured output required by Stagehand',
-			);
-			const structuredModel = model
-				.withStructuredOutput(options.response_model.schema, {
-					name: options.response_model.name,
-					includeRaw: true,
-				})
-				.bind({ maxTokens } as never);
-			const structuredResponse = await structuredModel.invoke(messages);
+			if (typeof model.withStructuredOutput !== 'function') {
+				throw new ApplicationError(
+					'The connected Chat Model does not support structured output required by Stagehand',
+				);
+			}
+			let structuredResponse: unknown;
+			try {
+				const structuredModel = model
+					.withStructuredOutput(options.response_model.schema, {
+						name: options.response_model.name,
+						includeRaw: true,
+					})
+					.bind({ maxTokens } as never);
+				structuredResponse = await structuredModel.invoke(messages);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				throw new ApplicationError(
+					`The connected Chat Model failed to produce structured output for Stagehand response "${options.response_model.name}": ${message}`,
+				);
+			}
 			const { parsed: data, raw } = structuredResponse as {
 				parsed: unknown;
 				raw: { usage_metadata?: { input_tokens: number; output_tokens: number; total_tokens: number } };
 			};
+			const validation = options.response_model.schema.safeParse(data);
+			if (!validation.success) {
+				throw new ApplicationError(
+					`The connected Chat Model returned invalid structured output for Stagehand response "${options.response_model.name}": ${validation.error.message}`,
+				);
+			}
 			const usage = raw.usage_metadata;
 			return {
-				data,
+				data: validation.data,
 				usage: {
 					prompt_tokens: usage?.input_tokens ?? 0,
 					completion_tokens: usage?.output_tokens ?? 0,
