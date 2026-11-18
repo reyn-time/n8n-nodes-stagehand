@@ -6,7 +6,7 @@ Community nodes for browser automation with [Stagehand](https://github.com/brows
 
 Install `@dndr/n8n-nodes-stagehand` in your n8n community nodes environment, then restart n8n. The Stagehand node requires a reachable Chromium CDP WebSocket URL and a connected n8n Chat Model. The selected Chat Model owns its provider, credentials, endpoint, and model configuration.
 
-Stagehand 4.4 requires Node.js 22.18 or newer and Chrome 137 or newer. It loads its bundled browser extension over the CDP connection. The Playwright node continues to connect directly with Playwright's `connectOverCDP` API.
+Stagehand 4.4 requires Node.js 22.18 or newer and Chrome 137 or newer. Stagehand v4 moved its runtime into a browser extension. That extension must be available to the browser. When the browser runs in a separate machine or container, install the extension there first; a CDP connection cannot make files on the n8n host available to Chromium. See the [Home Assistant OS VNC Web Browser setup](docs/home-assistant-vnc-web-browser.md) for one common configuration. The Playwright node continues to connect directly with Playwright's `connectOverCDP` API and does not need the Stagehand extension.
 
 Connect a Chat Model node to Stagehand's **Model** input. Configure **Maximum Output Tokens** under Advanced Options if needed; it defaults to 4096. Stagehand supports **Act**, **Extract**, and **Observe**. Extract also needs an output schema.
 
