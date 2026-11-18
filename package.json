@@ -22,9 +22,12 @@
 		"build": "npx rimraf dist && tsc && gulp build:icons",
 		"dev": "tsc --watch",
 		"test": "vitest run",
-		"format": "prettier nodes --write",
+		"format": "prettier nodes tests package.json --write",
+		"format:check": "prettier --check nodes tests package.json",
 		"lint": "eslint nodes package.json",
 		"lintfix": "eslint nodes package.json --fix",
+		"typecheck": "tsc --noEmit",
+		"check": "npm run format:check && npm run lint && npm run typecheck && npm test",
 		"prepublishOnly": "npm run build && npm run lint -c .eslintrc.prepublish.js nodes package.json"
 	},
 	"files": [

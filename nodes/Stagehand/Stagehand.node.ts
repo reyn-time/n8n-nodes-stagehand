@@ -37,27 +37,33 @@ function getConnectedModelName(model: BaseChatModel): string {
 class ConnectedChatModelClient extends LLMClient {
 	type = 'n8nChatModel';
 
-	constructor(private readonly model: BaseChatModel, private readonly maxOutputTokens: number) {
+	constructor(
+		private readonly model: BaseChatModel,
+		private readonly maxOutputTokens: number,
+	) {
 		super(getConnectedModelName(model));
 	}
 
-	async createChatCompletion<T = LLMResponse>({ options }: CreateChatCompletionOptions): Promise<T> {
+	async createChatCompletion<T = LLMResponse>({
+		options,
+	}: CreateChatCompletionOptions): Promise<T> {
 		const messages = options.messages.map(({ role, content }) => {
-			const mappedContent = typeof content === 'string'
-				? content
-				: content.map((part) => {
-						if (part.type === 'text') return { type: 'text' as const, text: part.text ?? '' };
-						if ('image_url' in part && part.image_url?.url) {
-							return { type: 'image_url' as const, image_url: part.image_url.url };
-						}
-						if ('source' in part && part.source?.data) {
-							return {
-								type: 'image_url' as const,
-								image_url: `data:${part.source.media_type};base64,${part.source.data}`,
-							};
-						}
-						return { type: 'text' as const, text: part.text ?? '' };
-					});
+			const mappedContent =
+				typeof content === 'string'
+					? content
+					: content.map((part) => {
+							if (part.type === 'text') return { type: 'text' as const, text: part.text ?? '' };
+							if ('image_url' in part && part.image_url?.url) {
+								return { type: 'image_url' as const, image_url: part.image_url.url };
+							}
+							if ('source' in part && part.source?.data) {
+								return {
+									type: 'image_url' as const,
+									image_url: `data:${part.source.media_type};base64,${part.source.data}`,
+								};
+							}
+							return { type: 'text' as const, text: part.text ?? '' };
+						});
 
 			switch (role) {
 				case 'system':
@@ -105,7 +111,9 @@ class ConnectedChatModelClient extends LLMClient {
 			}
 			const { parsed: data, raw } = structuredResponse as {
 				parsed: unknown;
-				raw: { usage_metadata?: { input_tokens: number; output_tokens: number; total_tokens: number } };
+				raw: {
+					usage_metadata?: { input_tokens: number; output_tokens: number; total_tokens: number };
+				};
 			};
 			const validation = options.response_model.schema.safeParse(data);
 			if (!validation.success) {
@@ -125,12 +133,13 @@ class ConnectedChatModelClient extends LLMClient {
 		}
 
 		const response = await model.bind({ maxTokens } as never).invoke(messages);
-		const responseText = typeof response.content === 'string'
-			? response.content
-			: response.content
-					.map((part) => typeof part === 'string' ? part : 'text' in part ? part.text : '')
-					.join('');
-		const toolCalls = response instanceof AIMessage ? response.tool_calls ?? [] : [];
+		const responseText =
+			typeof response.content === 'string'
+				? response.content
+				: response.content
+						.map((part) => (typeof part === 'string' ? part : 'text' in part ? part.text : ''))
+						.join('');
+		const toolCalls = response instanceof AIMessage ? (response.tool_calls ?? []) : [];
 		const usage = response instanceof AIMessage ? response.usage_metadata : undefined;
 
 		return {
@@ -392,7 +401,8 @@ export class Stagehand implements INodeType {
 						type: 'number',
 						default: DEFAULT_MAX_OUTPUT_TOKENS,
 						typeOptions: { minValue: 1 },
-						description: 'Maximum number of tokens the connected Chat Model can generate per response',
+						description:
+							'Maximum number of tokens the connected Chat Model can generate per response',
 					},
 					{
 						displayName: 'Enable Caching',
