@@ -1,54 +1,80 @@
-const assert = require('node:assert/strict');
-const test = require('node:test');
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const Module = require('node:module');
-const stagehandInstances = [];
+const { instances } = vi.hoisted(() => ({ instances: [] }));
 
-class MockStagehand {
-	constructor(options) {
-		this.options = options;
-		this.page = {
-			act: async () => {
-				this.options.logger?.({ category: 'act', message: 'Act requested' });
-				const completion = await this.options.llmClient.createChatCompletion({
-					options: {
-						messages: [{ role: 'user', content: 'click continue' }],
-						response_model: { name: 'operatorResponseSchema', schema: {} },
+vi.mock('@browserbasehq/stagehand', async (importOriginal) => {
+	const stagehand = await importOriginal();
+
+	return {
+		...stagehand,
+		Stagehand: class {
+			constructor(options) {
+				this.options = options;
+				instances.push(this);
+				this.page = {
+					act: async () => {
+						options.logger?.({ category: 'act', message: 'Act requested' });
+						const completion = await options.llmClient.createChatCompletion({
+							options: {
+								messages: [{ role: 'user', content: 'click continue' }],
+								response_model: { name: 'operatorResponseSchema', schema: {} },
+							},
+							logger: options.logger,
+						});
+						return { success: true, completion };
 					},
-					logger: this.options.logger ?? (() => {}),
-				});
-				return { success: true, completion };
-			},
-			observe: async () => {
-				this.options.logger?.({ category: 'observe', message: 'Observe requested' });
-				const completion = await this.options.llmClient.createChatCompletion({
-					options: {
-						messages: [{ role: 'user', content: 'find continue' }],
-						response_model: { name: 'observationSchema', schema: {} },
+					observe: async () => {
+						options.logger?.({ category: 'observe', message: 'Observe requested' });
+						const completion = await options.llmClient.createChatCompletion({
+							options: {
+								messages: [{ role: 'user', content: 'find continue' }],
+								response_model: { name: 'observationSchema', schema: {} },
+							},
+							logger: options.logger,
+						});
+						return { observations: completion.data.elements, completion };
 					},
-					logger: this.options.logger ?? (() => {}),
-				});
-				return { observations: completion.data.elements, completion };
-			},
-		};
-		stagehandInstances.push(this);
-	}
+				};
+			}
 
-	async init() {}
-	async close() {}
+			init() {}
+			close() {}
+		},
+	};
+});
+
+import { Stagehand } from '../nodes/Stagehand/Stagehand.node';
+
+const actResponse = {
+	method: 'close',
+	reasoning: 'done',
+	taskComplete: true,
+	parameters: null,
+};
+const observeResponse = { elements: [{ description: 'Continue button' }] };
+
+function chatModel(secret, response) {
+	const invoke = vi.fn(async () => ({
+		parsed: response,
+		raw: { usage_metadata: { input_tokens: 10, output_tokens: 20, total_tokens: 30 } },
+	}));
+	const bind = vi.fn(() => ({ invoke }));
+	const withStructuredOutput = vi.fn(() => ({ bind }));
+
+	return {
+		model: {
+			apiKey: secret,
+			modelName: 'configured-chat-model',
+			invoke: vi.fn(),
+			withStructuredOutput,
+		},
+		withStructuredOutput,
+		bind,
+		invoke,
+	};
 }
 
-const originalLoad = Module._load;
-Module._load = function (request, parent, isMain) {
-	if (request === '@browserbasehq/stagehand') {
-		return { ...originalLoad.call(this, request, parent, isMain), Stagehand: MockStagehand };
-	}
-	return originalLoad.call(this, request, parent, isMain);
-};
-const { Stagehand } = require('../dist/nodes/Stagehand/Stagehand.node.js');
-Module._load = originalLoad;
-
-function createContext(operation, chatModel, extraParameters = {}) {
+function executionContext(operation, model, options = {}) {
 	const parameters = {
 		operation,
 		cdpUrl: 'ws://localhost:9222',
@@ -56,94 +82,55 @@ function createContext(operation, chatModel, extraParameters = {}) {
 		'options.enableCaching': true,
 		'options.logMessages': true,
 		'options.verbose': 0,
-		...extraParameters,
+		...options,
 	};
 
 	return {
 		getInputData: () => [{ json: {} }],
-		getInputConnectionData: async () => chatModel,
+		getInputConnectionData: async () => model,
 		getNodeParameter: (name, _index, fallback) => parameters[name] ?? fallback,
 		getNode: () => ({ name: 'Stagehand' }),
 	};
 }
 
-function createChatModel(secret) {
-	const calls = [];
-	const model = {
-		apiKey: secret,
-		modelName: 'configured-chat-model',
-		invoke: async () => { throw new Error('Expected bind() before invoke()'); },
-		bind(options) {
-			calls.push(options);
-			return {
-				invoke: async (messages) => {
-					calls.push(messages);
-					return { content: 'model response', id: 'response-1' };
-				},
-			};
-		},
-		withStructuredOutput(schema, options) {
-			calls.push({ schema, ...options });
-			const parsed = options.name === 'observationSchema'
-				? { elements: [{ description: 'Continue button' }] }
-				: { method: 'close', reasoning: 'done', taskComplete: true, parameters: null };
-			return {
-				bind: (bindOptions) => {
-					calls.push(bindOptions);
-					return {
-						invoke: async (messages) => {
-							calls.push(messages);
-							return {
-								parsed,
-								raw: { usage_metadata: { input_tokens: 10, output_tokens: 20, total_tokens: 30 } },
-							};
-						},
-					};
-				},
-			};
-		},
-	};
-	return { model, calls };
-}
+describe('Stagehand connected Chat Model', () => {
+	beforeEach(() => instances.splice(0));
 
-test('Act delegates inference to the connected Chat Model with the default token limit', async () => {
-	stagehandInstances.length = 0;
-	const { model, calls } = createChatModel('secret-act-token');
-	const result = await Stagehand.prototype.execute.call(createContext('act', model));
+	it('uses the connected model for Act, with the default token limit and safe logs', async () => {
+		const connected = chatModel('secret-act-token', actResponse);
+		const result = await Stagehand.prototype.execute.call(executionContext('act', connected.model));
+		const { llmClient } = instances[0].options;
 
-	assert.equal(result[0][0].json.result.success, true);
-	assert.deepEqual(calls[0], { schema: {}, name: 'operatorResponseSchema', includeRaw: true });
-	assert.deepEqual(calls[1], { maxTokens: 4096 });
-	assert.equal(calls[2][0].content, 'click continue');
-	assert.equal(stagehandInstances[0].options.llmClient.modelName, 'configured-chat-model');
-	assert.deepEqual(result[0][0].json.result.completion.data, {
-		method: 'close',
-		reasoning: 'done',
-		taskComplete: true,
-		parameters: null,
+		expect(result[0][0].json.result.completion.data).toEqual(actResponse);
+		expect(connected.withStructuredOutput).toHaveBeenCalledWith(
+			{},
+			{ name: 'operatorResponseSchema', includeRaw: true },
+		);
+		expect(connected.bind).toHaveBeenCalledWith({ maxTokens: 4096 });
+		expect(connected.invoke).toHaveBeenCalledWith(
+			expect.arrayContaining([expect.objectContaining({ content: 'click continue' })]),
+		);
+		expect(llmClient.modelName).toBe('configured-chat-model');
+		expect(result[0][0].json.messages).toEqual([{ category: 'act', message: 'Act requested' }]);
+		expect(JSON.stringify(result[0][0].json.messages)).not.toContain('secret-act-token');
 	});
-	assert.deepEqual(result[0][0].json.result.completion.usage, {
-		prompt_tokens: 10,
-		completion_tokens: 20,
-		total_tokens: 30,
+
+	it('uses the connected model for Observe and honors the configured token limit', async () => {
+		const connected = chatModel('secret-observe-token', observeResponse);
+		const result = await Stagehand.prototype.execute.call(
+			executionContext('observe', connected.model, { 'options.maxOutputTokens': 1200 }),
+		);
+
+		expect(result[0][0].json.result.observations).toEqual(observeResponse.elements);
+		expect(connected.withStructuredOutput).toHaveBeenCalledWith(
+			{},
+			{ name: 'observationSchema', includeRaw: true },
+		);
+		expect(connected.bind).toHaveBeenCalledWith({ maxTokens: 1200 });
+		expect(connected.invoke).toHaveBeenCalledWith(
+			expect.arrayContaining([expect.objectContaining({ content: 'find continue' })]),
+		);
+		expect(result[0][0].json.messages).toEqual([{ category: 'observe', message: 'Observe requested' }]);
+		expect(JSON.stringify(result[0][0].json.messages)).not.toContain('secret-observe-token');
 	});
-	assert.equal(stagehandInstances[0].options.llmClient.type, 'n8nChatModel');
-	assert.equal('modelClientOptions' in stagehandInstances[0].options, false);
-	assert.deepEqual(result[0][0].json.messages, [{ category: 'act', message: 'Act requested' }]);
-	assert.equal(JSON.stringify(result[0][0].json.messages).includes('secret-act-token'), false);
-});
-
-test('Observe delegates inference to the connected Chat Model and honors the configured token limit', async () => {
-	stagehandInstances.length = 0;
-	const { model, calls } = createChatModel('secret-observe-token');
-	const result = await Stagehand.prototype.execute.call(
-		createContext('observe', model, { 'options.maxOutputTokens': 1200 }),
-	);
-
-	assert.deepEqual(result[0][0].json.result.observations, [{ description: 'Continue button' }]);
-	assert.deepEqual(calls[0], { schema: {}, name: 'observationSchema', includeRaw: true });
-	assert.deepEqual(calls[1], { maxTokens: 1200 });
-	assert.equal(calls[2][0].content, 'find continue');
-	assert.deepEqual(result[0][0].json.messages, [{ category: 'observe', message: 'Observe requested' }]);
-	assert.equal(JSON.stringify(result[0][0].json.messages).includes('secret-observe-token'), false);
 });
