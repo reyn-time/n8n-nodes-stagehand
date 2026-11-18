@@ -1,15 +1,15 @@
 # Dependency audit follow-up
 
-Audit snapshot: 2026-11-18, after the dependency refresh for Issue 5.
+Audit snapshot: 2026-11-18, after the parser and production dependency updates for Issue 5.
 
-`npm audit` reports 0 critical, 11 high, and 3 moderate vulnerabilities. Issue 5's no-critical-or-high acceptance criterion remains unmet.
+The full `npm audit` reports 0 critical, 12 high, and 2 moderate vulnerabilities. Issue 5's no-critical-or-high acceptance criterion remains unmet. `npm audit --omit=dev` reports 0 vulnerabilities.
 
 ## Remaining paths
 
 | Path | Finding | Reason it remains |
 | --- | --- | --- |
-| `n8n-workflow@2.49.1` → `@n8n/expression-runtime@0.40.1` → `zod@3.25.76` | High findings on `n8n-workflow`, `@n8n/expression-runtime`, and Zod | The n8n peer currently requires Zod 3.25.76. Stagehand 4.4.0 requires Zod 4.6.6. The package keeps both versions isolated; changing the n8n peer to Zod 4 or downgrading the host API would break the supported n8n contract. npm only offers an `n8n-workflow@1.75.1` downgrade for its advisory. |
-| `@typescript-eslint/parser@8.47.0` → `@typescript-eslint/typescript-estree` → `fast-glob`, `micromatch`, `minimatch` | High findings on the parser's development toolchain | These packages are used by the required n8n ESLint plugin. npm's current advisory data identifies conflicting affected ranges across parser releases, so no compatible parser update has been selected. |
-| `vitest@4.1.12` → `vite@6.4.6`, `fdir`, `tinyglobby`, `picomatch` | High findings in the test toolchain | npm's current audit data still marks these paths after moving off the vulnerable Vitest 3 line and selecting the compatible Vite 6 patch line. |
+| `n8n-workflow@2.49.1` → `@n8n/expression-runtime@0.40.1` → `zod@3.25.76` | High findings on `n8n-workflow`, `@n8n/expression-runtime`, and Zod | Zod 3 remains a peer of the development `n8n-workflow` dependency. The package no longer declares Zod 3 as a production dependency and uses the isolated `zod-v4` alias for Stagehand. The n8n host contract still requires Zod 3; npm only offers an `n8n-workflow@1.75.1` downgrade for its advisory. |
+| `@typescript-eslint/parser@8.73.0` and `@typescript-eslint/utils@8.47.0` → `@typescript-eslint/typescript-estree`, `fast-glob`, `micromatch`, `tinyglobby`, `minimatch` | High findings on the development lint toolchain, plus moderate findings on `@typescript-eslint/utils` and `minimatch` | The parser is updated to the version npm's initial dry-run suggested. A fresh audit still flags its `tinyglobby` path and the ESLint plugin's older `utils` dependency tree. |
+| `vitest@4.1.12` → `vite@6.4.6`, `fdir`, `tinyglobby`, `picomatch` | High findings in the test toolchain | npm's fix plan proposes downgrading Vite to 6.2.7 and Vitest to 3.1.4. The current Vite/Vitest versions remain until a compatible patched release or verified migration is available. |
 
-No npm overrides were added. Stagehand's Zod 4 dependency is also installed under the explicit `zod-v4` alias so n8n can continue resolving its Zod 3 peer independently.
+No npm overrides were added. The production dependency tree audits clean; remaining findings come from development tooling and the n8n Zod 3 peer contract.
