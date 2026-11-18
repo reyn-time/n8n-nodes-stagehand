@@ -23,7 +23,7 @@ These checks exercise the configured OpenRouter model without changing the brows
 
 ## Development
 
-Requires Node.js 22.18 or newer.
+Development installs and checks require Node.js 24 or newer. The published node runtime requires Node.js 22.18 or newer for Stagehand.
 
 ```sh
 npm install
