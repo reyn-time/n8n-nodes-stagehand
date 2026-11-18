@@ -443,7 +443,6 @@ export class Stagehand implements INodeType {
 				stagehand = await StagehandCore.create({
 					browser,
 					cache: enableCaching,
-					domSettleTimeoutMs: 0,
 					model: createConnectedChatModel(model, maxOutputTokens),
 					logging: {
 						level: verbose === 0 ? 'error' : verbose === 1 ? 'info' : 'debug',
