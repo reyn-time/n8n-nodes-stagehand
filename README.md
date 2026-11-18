@@ -1,10 +1,10 @@
-# n8n-nodes-stagehand
+# @dndr/n8n-nodes-stagehand
 
 Community nodes for browser automation with [Stagehand](https://github.com/browserbase/stagehand), Playwright, and Chrome DevTools Protocol (CDP).
 
 ## Install
 
-Install `n8n-nodes-stagehand` in your n8n community nodes environment, then restart n8n. The Stagehand node requires a reachable Chromium CDP WebSocket URL and a connected n8n Chat Model. The selected Chat Model owns its provider, credentials, endpoint, and model configuration.
+Install `@dndr/n8n-nodes-stagehand` in your n8n community nodes environment, then restart n8n. The Stagehand node requires a reachable Chromium CDP WebSocket URL and a connected n8n Chat Model. The selected Chat Model owns its provider, credentials, endpoint, and model configuration.
 
 Stagehand 4.4 requires Node.js 22.18 or newer and Chrome 137 or newer. It loads its bundled browser extension over the CDP connection. The Playwright node continues to connect directly with Playwright's `connectOverCDP` API.
 
