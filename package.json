@@ -21,6 +21,7 @@
 	"scripts": {
 		"build": "npx rimraf dist && tsc && gulp build:icons",
 		"dev": "tsc --watch",
+		"test": "npm run build && node --test tests/*.test.js",
 		"format": "prettier nodes --write",
 		"lint": "eslint nodes package.json",
 		"lintfix": "eslint nodes package.json --fix",
