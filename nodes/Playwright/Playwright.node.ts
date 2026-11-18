@@ -5,7 +5,7 @@ import type {
 	INodeTypeDescription,
 	JsonObject,
 } from 'n8n-workflow';
-import { ApplicationError, NodeApiError, NodeConnectionType } from 'n8n-workflow';
+import { NodeApiError, UserError } from 'n8n-workflow';
 import { Browser, chromium } from 'playwright';
 
 export class Playwright implements INodeType {
@@ -20,8 +20,8 @@ export class Playwright implements INodeType {
 		defaults: {
 			name: 'Playwright',
 		},
-		inputs: [NodeConnectionType.Main],
-		outputs: [NodeConnectionType.Main],
+		inputs: ['main'],
+		outputs: ['main'],
 		usableAsTool: true,
 		properties: [
 			{
@@ -468,7 +468,7 @@ export class Playwright implements INodeType {
 						const state = this.getNodeParameter('state', i, 'load') as string;
 
 						if (state !== 'load' && state !== 'domcontentloaded' && state !== 'networkidle') {
-							throw new ApplicationError(`Unsupported load state: ${state}`);
+							throw new UserError(`Unsupported load state: ${state}`);
 						}
 
 						await page.waitForLoadState(state, { timeout });
@@ -495,7 +495,7 @@ export class Playwright implements INodeType {
 					}
 
 					default: {
-						throw new ApplicationError(`Unsupported operation: ${operation}`);
+						throw new UserError(`Unsupported operation: ${operation}`);
 					}
 				}
 			} catch (error: unknown) {

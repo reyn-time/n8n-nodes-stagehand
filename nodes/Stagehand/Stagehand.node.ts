@@ -1,20 +1,15 @@
-import { AIMessage, HumanMessage, SystemMessage } from '@langchain/core/messages';
+import { AIMessage, HumanMessage } from '@langchain/core/messages';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type {
 	IExecuteFunctions,
+	IDataObject,
 	INodeExecutionData,
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { ApplicationError, assert, NodeConnectionType, NodeOperationError } from 'n8n-workflow';
-import {
-	CreateChatCompletionOptions,
-	LLMClient,
-	LLMResponse,
-	LogLine,
-	Stagehand as StagehandCore,
-} from '@browserbasehq/stagehand';
-import { z, ZodTypeAny } from 'zod';
+import { assert, NodeOperationError, UserError } from 'n8n-workflow';
+import type { ClientLLM } from '@browserbasehq/stagehand' with { 'resolution-mode': 'import' };
+import { z, ZodTypeAny } from 'zod-v4';
 import jsonToZod from 'json-to-zod';
 import jsonSchemaToZod from 'json-schema-to-zod';
 
@@ -26,164 +21,125 @@ type Field = {
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 4096;
 
-function getConnectedModelName(model: BaseChatModel): string {
-	const modelWithIdentity = model as BaseChatModel & { model?: unknown; modelName?: unknown };
-	const modelName = modelWithIdentity.modelName ?? modelWithIdentity.model;
-
-	return typeof modelName === 'string' && modelName.length > 0 ? modelName : 'connected-chat-model';
-}
-
-/** Adapts Stagehand's completion requests to the Chat Model connected in n8n. */
-class ConnectedChatModelClient extends LLMClient {
-	type = 'n8nChatModel';
-
-	constructor(
-		private readonly model: BaseChatModel,
-		private readonly maxOutputTokens: number,
-	) {
-		super(getConnectedModelName(model));
-	}
-
-	async createChatCompletion<T = LLMResponse>({
-		options,
-	}: CreateChatCompletionOptions): Promise<T> {
-		const messages = options.messages.map(({ role, content }) => {
-			const mappedContent =
-				typeof content === 'string'
-					? content
-					: content.map((part) => {
-							if (part.type === 'text') return { type: 'text' as const, text: part.text ?? '' };
-							if ('image_url' in part && part.image_url?.url) {
-								return { type: 'image_url' as const, image_url: { url: part.image_url.url } };
-							}
-							if ('source' in part && part.source?.data) {
-								return {
-									type: 'image_url' as const,
-									image_url: {
-										url: `data:${part.source.media_type};base64,${part.source.data}`,
-									},
-								};
-							}
-							return { type: 'text' as const, text: part.text ?? '' };
-						});
-
-			switch (role) {
-				case 'system':
-					return new SystemMessage({ content: mappedContent as never });
-				case 'assistant':
-					return new AIMessage({ content: mappedContent as never });
-				default:
-					return new HumanMessage({ content: mappedContent as never });
-			}
-		});
-
-		let model = this.model;
-		if (options.tools?.length && !model.bindTools) {
-			throw new ApplicationError(
-				'The connected Chat Model does not support tool calling required by Stagehand',
-			);
-		}
-		if (options.tools?.length && model.bindTools) {
-			model = model.bindTools(
-				options.tools.map((tool) => ({
-					name: tool.name,
-					description: tool.description,
-					parameters: tool.parameters,
-				})),
-				{ tool_choice: options.tool_choice },
-			) as BaseChatModel;
-		}
-
-		const maxTokens = options.maxTokens ?? this.maxOutputTokens;
-		if (options.response_model) {
-			if (typeof model.withStructuredOutput !== 'function') {
-				throw new ApplicationError(
-					'The connected Chat Model does not support structured output required by Stagehand',
-				);
-			}
-			let structuredResponse: unknown;
-			try {
-				const structuredModel = model
-					.withStructuredOutput(options.response_model.schema, {
-						name: options.response_model.name,
-						includeRaw: true,
-					})
-					.bind({ maxTokens } as never);
-				structuredResponse = await structuredModel.invoke(messages);
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				throw new ApplicationError(
-					`The connected Chat Model failed to produce structured output for Stagehand response "${options.response_model.name}": ${message}`,
-				);
-			}
-			const { parsed: data, raw } = structuredResponse as {
-				parsed: unknown;
-				raw: {
-					usage_metadata?: { input_tokens: number; output_tokens: number; total_tokens: number };
-				};
-			};
-			const validation = options.response_model.schema.safeParse(data);
-			if (!validation.success) {
-				throw new ApplicationError(
-					`The connected Chat Model returned invalid structured output for Stagehand response "${options.response_model.name}": ${validation.error.message}`,
-				);
-			}
-			const usage = raw.usage_metadata;
-			return {
-				data: validation.data,
-				...(usage
-					? {
-							usage: {
-								prompt_tokens: usage.input_tokens,
-								completion_tokens: usage.output_tokens,
-								total_tokens: usage.total_tokens,
-							},
-						}
-					: {}),
-			} as T;
-		}
-
-		const response = await model.bind({ maxTokens } as never).invoke(messages);
-		const responseText =
-			typeof response.content === 'string'
-				? response.content
-				: response.content
-						.map((part) => (typeof part === 'string' ? part : 'text' in part ? part.text : ''))
-						.join('');
-		const toolCalls = response instanceof AIMessage ? (response.tool_calls ?? []) : [];
-		const usage = response instanceof AIMessage ? response.usage_metadata : undefined;
-
-		return {
-			id: response.id ?? 'n8n-chat-model-response',
-			object: 'chat.completion',
-			created: Math.floor(Date.now() / 1000),
-			model: this.modelName,
-			choices: [
-				{
-					index: 0,
-					message: {
-						role: 'assistant',
-						content: responseText || null,
-						tool_calls: toolCalls.map((call, index) => ({
-							id: call.id ?? `call_${index}`,
-							type: 'function',
-							function: { name: call.name, arguments: JSON.stringify(call.args) },
-						})),
-					},
-					finish_reason: toolCalls.length ? 'tool_calls' : 'stop',
-				},
-			],
-			...(usage
-				? {
-						usage: {
-							prompt_tokens: usage.input_tokens,
-							completion_tokens: usage.output_tokens,
-							total_tokens: usage.total_tokens,
-						},
+/** Adapts Stagehand's model callback to the Chat Model connected in n8n. */
+function createConnectedChatModel(model: BaseChatModel, maxOutputTokens: number): ClientLLM {
+	return {
+		async generate(request) {
+			const messages = request.messages.map(({ role, content }) => {
+				const parts = Array.isArray(content) ? content : [content];
+				const mappedContent = parts.map((part) => {
+					if (part.type === 'text') return { type: 'text' as const, text: part.text };
+					if (part.type === 'image') {
+						return {
+							type: 'image_url' as const,
+							image_url: { url: `data:${part.mimeType};base64,${part.data}` },
+						};
 					}
-				: {}),
-		} as T;
-	}
+					if (part.type === 'tool_use') {
+						return { type: 'text' as const, text: JSON.stringify(part.input) };
+					}
+					return {
+						type: 'text' as const,
+						text: part.content.map((item) => (item.type === 'text' ? item.text : '')).join(''),
+					};
+				});
+
+				return role === 'assistant'
+					? new AIMessage({ content: mappedContent as never })
+					: new HumanMessage({ content: mappedContent as never });
+			});
+
+			let connectedModel = model;
+			if ('tools' in request && request.tools?.length && !connectedModel.bindTools) {
+				throw new UserError(
+					'The connected Chat Model does not support tool calling required by Stagehand',
+				);
+			}
+			if ('tools' in request && request.tools?.length && connectedModel.bindTools) {
+				connectedModel = connectedModel.bindTools(
+					request.tools.map((tool) => ({
+						name: tool.name,
+						description: tool.description,
+						parameters: tool.inputSchema,
+					})),
+					{ tool_choice: 'toolChoice' in request ? (request.toolChoice?.mode ?? 'auto') : 'auto' },
+				) as BaseChatModel;
+			}
+
+			const invokeOptions = { maxTokens: maxOutputTokens } as never;
+			const usageFrom = (response: unknown) => {
+				const usage = response instanceof AIMessage ? response.usage_metadata : undefined;
+				return usage
+					? {
+							inputTokens: usage.input_tokens,
+							outputTokens: usage.output_tokens,
+							totalTokens: usage.total_tokens,
+						}
+					: undefined;
+			};
+
+			if ('responseFormat' in request && request.responseFormat?.type === 'json_schema') {
+				const responseFormat = request.responseFormat;
+				if (typeof connectedModel.withStructuredOutput !== 'function') {
+					throw new UserError(
+						'The connected Chat Model does not support structured output required by Stagehand',
+					);
+				}
+				try {
+					const schema = new Function(
+						'z',
+						`return ${jsonSchemaToZod(responseFormat.schema as never)};`,
+					)(z);
+					const structured = (await connectedModel
+						.withStructuredOutput(schema, { name: responseFormat.name, includeRaw: true })
+						.invoke(messages, invokeOptions)) as { parsed: unknown; raw: unknown };
+					if (
+						!structured.parsed ||
+						typeof structured.parsed !== 'object' ||
+						Array.isArray(structured.parsed)
+					) {
+						throw new UserError('The connected Chat Model returned a non-object response');
+					}
+					return {
+						role: 'assistant' as const,
+						content: [],
+						outputFormat: 'json_schema' as const,
+						structuredContent: structured.parsed as never,
+						...(usageFrom(structured.raw) ? { usage: usageFrom(structured.raw) } : {}),
+					};
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					throw new UserError(
+						`The connected Chat Model failed to produce structured output for Stagehand response "${responseFormat.name}": ${message}`,
+					);
+				}
+			}
+
+			const response = await connectedModel.invoke(messages, invokeOptions);
+			const responseText =
+				typeof response.content === 'string'
+					? response.content
+					: response.content
+							.map((part) => (typeof part === 'string' ? part : 'text' in part ? part.text : ''))
+							.join('');
+			const toolCalls = response instanceof AIMessage ? (response.tool_calls ?? []) : [];
+			const content = [
+				...(responseText ? [{ type: 'text' as const, text: responseText }] : []),
+				...toolCalls.map((call, index) => ({
+					type: 'tool_use' as const,
+					id: call.id ?? `call_${index}`,
+					name: call.name,
+					input: call.args,
+				})),
+			];
+			return {
+				role: 'assistant' as const,
+				content,
+				outputFormat: 'text' as const,
+				...(usageFrom(response) ? { usage: usageFrom(response) } : {}),
+			};
+		},
+	};
 }
 
 export class Stagehand implements INodeType {
@@ -199,15 +155,15 @@ export class Stagehand implements INodeType {
 			name: 'Stagehand',
 		},
 		inputs: [
-			NodeConnectionType.Main,
+			'main',
 			{
 				displayName: 'Model',
 				maxConnections: 1,
-				type: NodeConnectionType.AiLanguageModel,
+				type: 'ai_languageModel',
 				required: false,
 			},
 		],
-		outputs: [NodeConnectionType.Main],
+		outputs: ['main'],
 		usableAsTool: true,
 		properties: [
 			{
@@ -462,9 +418,10 @@ export class Stagehand implements INodeType {
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
 		const results: INodeExecutionData[] = [];
-		const model = await this.getInputConnectionData(NodeConnectionType.AiLanguageModel, 0);
+		const model = await this.getInputConnectionData('ai_languageModel', 0);
 
 		assert(Stagehand.isChatInstance(model), 'A Chat Model is required');
+		const { Stagehand: StagehandCore, localBrowser } = await import('@browserbasehq/stagehand');
 
 		for (let i = 0; i < items.length; i++) {
 			const operation = this.getNodeParameter('operation', i) as string;
@@ -478,24 +435,28 @@ export class Stagehand implements INodeType {
 				DEFAULT_MAX_OUTPUT_TOKENS,
 			) as number;
 
-			const messages: LogLine[] = [];
-			const stagehand = new StagehandCore({
-				env: 'LOCAL',
-				enableCaching,
-				verbose,
-				logger: logMessages
-					? (message) => {
-							messages.push(message);
-						}
-					: undefined,
-				llmClient: new ConnectedChatModelClient(model, maxOutputTokens),
-				localBrowserLaunchOptions: {
-					cdpUrl,
-				},
-			});
-			await stagehand.init();
+			const messages: IDataObject[] = [];
+			const browser = await localBrowser.connect({ cdpUrl });
+			let stagehand: Awaited<ReturnType<typeof StagehandCore.create>> | undefined;
 
 			try {
+				stagehand = await StagehandCore.create({
+					browser,
+					cache: enableCaching,
+					domSettleTimeoutMs: 0,
+					model: createConnectedChatModel(model, maxOutputTokens),
+					logging: {
+						level: verbose === 0 ? 'error' : verbose === 1 ? 'info' : 'debug',
+						onLog: logMessages
+							? (message) => {
+									messages.push(message as unknown as IDataObject);
+								}
+							: undefined,
+					},
+				});
+				const page = await browser.context.activePage();
+				if (!page) throw new UserError('The connected browser has no active page');
+
 				switch (operation) {
 					case 'act': {
 						const instruction = this.getNodeParameter('instruction', i, '') as string;
@@ -503,7 +464,7 @@ export class Stagehand implements INodeType {
 						results.push({
 							json: {
 								operation,
-								result: await stagehand.page.act(instruction),
+								result: await stagehand.act(instruction, { page }),
 								...(logMessages ? { messages } : {}),
 							},
 						});
@@ -541,17 +502,15 @@ export class Stagehand implements INodeType {
 							}
 
 							default: {
-								throw new ApplicationError(`Unsupported schema source: ${schemaSource}`);
+								throw new UserError(`Unsupported schema source: ${schemaSource}`);
 							}
 						}
 
 						results.push({
 							json: {
 								operation,
-								result: await stagehand.page.extract({
-									instruction,
-									schema,
-								}),
+								result: (await stagehand.extract(instruction, schema as never, { page }))
+									.data as IDataObject,
 								...(logMessages ? { messages } : {}),
 							},
 						});
@@ -564,9 +523,7 @@ export class Stagehand implements INodeType {
 						results.push({
 							json: {
 								operation,
-								result: await stagehand.page.observe({
-									instruction,
-								}),
+								result: await stagehand.observe(instruction, { page }),
 								...(logMessages ? { messages } : {}),
 							},
 						});
@@ -574,7 +531,7 @@ export class Stagehand implements INodeType {
 					}
 
 					default: {
-						throw new ApplicationError(`Unsupported operation: ${operation}`);
+						throw new UserError(`Unsupported operation: ${operation}`);
 					}
 				}
 			} catch (error) {
@@ -588,7 +545,8 @@ export class Stagehand implements INodeType {
 					},
 				});
 			} finally {
-				await stagehand.close();
+				if (stagehand) await stagehand.close();
+				await browser.disconnect();
 			}
 		}
 

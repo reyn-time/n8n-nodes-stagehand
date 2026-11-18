@@ -6,6 +6,8 @@ Community nodes for browser automation with [Stagehand](https://github.com/brows
 
 Install `n8n-nodes-stagehand` in your n8n community nodes environment, then restart n8n. The Stagehand node requires a reachable Chromium CDP WebSocket URL and a connected n8n Chat Model. The selected Chat Model owns its provider, credentials, endpoint, and model configuration.
 
+Stagehand 4.4 requires Node.js 22.18 or newer and Chrome 137 or newer. It loads its bundled browser extension over the CDP connection. The Playwright node continues to connect directly with Playwright's `connectOverCDP` API.
+
 Connect a Chat Model node to Stagehand's **Model** input. Configure **Maximum Output Tokens** under Advanced Options if needed; it defaults to 4096. Stagehand supports **Act**, **Extract**, and **Observe**. Extract also needs an output schema.
 
 ## Manual integration check: OpenRouter and a remote browser
@@ -21,7 +23,7 @@ These checks exercise the configured OpenRouter model without changing the brows
 
 ## Development
 
-Requires Node.js 20.15 or newer.
+Requires Node.js 22.18 or newer.
 
 ```sh
 npm install

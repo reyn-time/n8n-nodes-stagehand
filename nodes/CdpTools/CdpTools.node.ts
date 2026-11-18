@@ -4,13 +4,7 @@ import type {
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { NodeConnectionType } from 'n8n-workflow';
-import {
-	ChatMessageContent,
-	CreateChatCompletionOptions,
-	LLMClient,
-	Stagehand,
-} from '@browserbasehq/stagehand';
+import { UserError } from 'n8n-workflow';
 
 export class CdpTools implements INodeType {
 	description: INodeTypeDescription = {
@@ -23,8 +17,8 @@ export class CdpTools implements INodeType {
 		defaults: {
 			name: 'CDP Tools',
 		},
-		inputs: [NodeConnectionType.Main],
-		outputs: [NodeConnectionType.Main],
+		inputs: ['main'],
+		outputs: ['main'],
 		usableAsTool: true,
 		properties: [
 			{
@@ -46,8 +40,8 @@ export class CdpTools implements INodeType {
 		for (let i = 0; i < items.length; i++) {
 			const cdpUrl = this.getNodeParameter('url', i, '') as string;
 
-			let tree = await getAccessibilityTree(cdpUrl);
-			const nodesMap = await getNodesMap(cdpUrl, tree);
+			const { tree: snapshot, xpathMap } = await getAccessibilitySnapshot(cdpUrl);
+			let tree = snapshot;
 			const matches = tree.matchAll(/\[((?:\d+-)?\d+)\] /g);
 
 			let j = 0;
@@ -59,7 +53,7 @@ export class CdpTools implements INodeType {
 				const replace = `[${j}] `;
 				offset += replace.length - match[0].length;
 				tree = `${before}${replace}${after}`;
-				xpaths.push(nodesMap[match[1]]);
+				xpaths.push(xpathMap[match[1]]);
 				j++;
 			}
 
@@ -80,91 +74,17 @@ export class CdpTools implements INodeType {
 /**
  * Get the accessibility tree from the page.
  */
-async function getAccessibilityTree(cdpUrl: string): Promise<string> {
-	let prompt: ChatMessageContent;
-	const stagehand = new Stagehand({
-		env: 'LOCAL',
-		domSettleTimeoutMs: 0,
-		modelClientOptions: {
-			apiKey: 'test',
-		},
-		localBrowserLaunchOptions: {
-			cdpUrl,
-		},
-		llmClient: {
-			createChatCompletion({ options }: CreateChatCompletionOptions) {
-				prompt = options.messages[1].content;
-				throw 'Intentional error to stop execution';
-			},
-		} as unknown as LLMClient,
-	});
-	await stagehand.init();
-
-	const { page } = stagehand;
+async function getAccessibilitySnapshot(
+	cdpUrl: string,
+): Promise<{ tree: string; xpathMap: Record<string, string> }> {
+	const { localBrowser } = await import('@browserbasehq/stagehand');
+	const browser = await localBrowser.connect({ cdpUrl });
 	try {
-		await page.observe('');
-	} catch {
+		const page = await browser.context.activePage();
+		if (!page) throw new UserError('The connected browser has no active page');
+		const snapshot = await page.snapshot();
+		return { tree: snapshot.formattedTree, xpathMap: snapshot.xpathMap };
 	} finally {
-		await stagehand.close();
+		await browser.disconnect();
 	}
-
-	return prompt!.toString().split('Accessibility Tree: \n')[1].trim();
-}
-
-/**
- * Get the nodes map from the page.
- */
-async function getNodesMap(cdpUrl: string, tree: string): Promise<Record<string, string>> {
-	const stagehand = new Stagehand({
-		env: 'LOCAL',
-		domSettleTimeoutMs: 0,
-		modelClientOptions: {
-			apiKey: 'test',
-		},
-		localBrowserLaunchOptions: {
-			cdpUrl,
-		},
-		llmClient: {
-			createChatCompletion() {
-				const matches = tree.matchAll(/\[((?:\d+-)?\d+)\] /g);
-
-				return {
-					data: {
-						elements: [...matches]
-							.filter((match) => match[1].includes('-'))
-							.map((match) => ({
-								elementId: match[1],
-								description: match[1],
-								method: '',
-								arguments: [],
-							})),
-					},
-					usage: {
-						prompt_tokens: 0,
-						completion_tokens: 0,
-						total_tokens: 0,
-					},
-				};
-			},
-		} as unknown as LLMClient,
-	});
-	await stagehand.init();
-
-	const { page } = stagehand;
-	try {
-		const results = await page.observe('x');
-		await stagehand.close();
-		return results.reduce(
-			(acc, result) => {
-				acc[result.description] = result.selector;
-				return acc;
-			},
-			{} as Record<string, string>,
-		);
-	} catch {
-	} finally {
-		await stagehand.close();
-	}
-
-	return {};
 }
