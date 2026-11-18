@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { AIMessage } from '@langchain/core/messages';
 import { z } from 'zod';
 
 const { instances } = vi.hoisted(() => ({ instances: [] }));
@@ -81,6 +82,7 @@ function chatModel(secret, response) {
 		raw: { usage_metadata: { input_tokens: 10, output_tokens: 20, total_tokens: 30 } },
 	}));
 	const bind = vi.fn(() => ({ invoke }));
+	const bindTools = vi.fn(() => ({ bind, invoke }));
 	const withStructuredOutput = vi.fn(() => ({ bind }));
 
 	return {
@@ -88,11 +90,14 @@ function chatModel(secret, response) {
 			apiKey: secret,
 			modelName: 'configured-chat-model',
 			invoke: vi.fn(),
+			bind,
+			bindTools,
 			withStructuredOutput,
 		},
 		withStructuredOutput,
 		bind,
 		invoke,
+		bindTools,
 	};
 }
 
@@ -200,5 +205,103 @@ describe('Stagehand connected Chat Model', () => {
 
 		expect(result[0][0].error.message).toContain('extractionSchema');
 		expect(result[0][0].error.message).toContain('Invalid JSON from model');
+	});
+
+	it('preserves system, assistant, user, and screenshot image content for the connected model', async () => {
+		const connected = chatModel('secret-multimodal-token', actResponse);
+		const result = await Stagehand.prototype.execute.call(executionContext('act', connected.model));
+		const { llmClient } = instances[0].options;
+
+		connected.invoke.mockResolvedValue(new AIMessage('done'));
+		await llmClient.createChatCompletion({
+			options: {
+				messages: [
+					{ role: 'system', content: 'Follow the instruction' },
+					{ role: 'assistant', content: 'I will inspect the page' },
+					{
+						role: 'user',
+						content: [
+							{ type: 'text', text: 'What is shown?' },
+							{ type: 'image_url', image_url: { url: 'https://example.com/screenshot.png' } },
+							{
+								type: 'image',
+								source: { type: 'base64', media_type: 'image/png', data: 'c2NyZWVuc2hvdA==' },
+							},
+						],
+					},
+				],
+			},
+			logger: vi.fn(),
+		});
+
+		const messages = connected.invoke.mock.calls.at(-1)[0];
+		expect(messages.map((message) => message.getType())).toEqual(['system', 'ai', 'human']);
+		expect(messages[0].content).toBe('Follow the instruction');
+		expect(messages[1].content).toBe('I will inspect the page');
+		expect(messages[2].content).toEqual([
+			{ type: 'text', text: 'What is shown?' },
+			{ type: 'image_url', image_url: { url: 'https://example.com/screenshot.png' } },
+			{ type: 'image_url', image_url: { url: 'data:image/png;base64,c2NyZWVuc2hvdA==' } },
+		]);
+		expect(result[0][0].error).toBeUndefined();
+	});
+
+	it('translates tool calls and omits unavailable usage metadata', async () => {
+		const connected = chatModel('secret-tool-token', actResponse);
+		await Stagehand.prototype.execute.call(executionContext('act', connected.model));
+		const { llmClient } = instances[0].options;
+		connected.invoke.mockResolvedValue(
+			new AIMessage({
+				content: '',
+				tool_calls: [{ id: 'call-1', name: 'click', args: { element: 2 } }],
+			}),
+		);
+
+		const completion = await llmClient.createChatCompletion({
+			options: {
+				messages: [{ role: 'user', content: 'Click the button' }],
+				tools: [{ name: 'click', description: 'Click an element', parameters: { type: 'object' } }],
+			},
+			logger: vi.fn(),
+		});
+
+		expect(connected.bindTools).toHaveBeenCalled();
+		expect(completion.choices[0].message.tool_calls).toEqual([
+			{
+				id: 'call-1',
+				type: 'function',
+				function: { name: 'click', arguments: '{"element":2}' },
+			},
+		]);
+		expect(completion.choices[0].finish_reason).toBe('tool_calls');
+		expect(completion).not.toHaveProperty('usage');
+	});
+
+	it('omits structured-response usage when the connected model does not provide it', async () => {
+		const connected = chatModel('secret-no-usage-token', actResponse);
+		connected.invoke.mockResolvedValue({ parsed: actResponse, raw: {} });
+
+		const result = await Stagehand.prototype.execute.call(executionContext('act', connected.model));
+
+		expect(result[0][0].json.result.completion).not.toHaveProperty('usage');
+	});
+
+	it('returns a clear error when tools are requested from a model without tool support', async () => {
+		const connected = chatModel('secret-no-tools-token', actResponse);
+		await Stagehand.prototype.execute.call(executionContext('act', connected.model));
+		const { llmClient } = instances[0].options;
+		delete connected.model.bindTools;
+
+		await expect(
+			llmClient.createChatCompletion({
+				options: {
+					messages: [{ role: 'user', content: 'Click the button' }],
+					tools: [
+						{ name: 'click', description: 'Click an element', parameters: { type: 'object' } },
+					],
+				},
+				logger: vi.fn(),
+			}),
+		).rejects.toThrow('does not support tool calling required by Stagehand');
 	});
 });

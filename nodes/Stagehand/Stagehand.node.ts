@@ -54,12 +54,14 @@ class ConnectedChatModelClient extends LLMClient {
 					: content.map((part) => {
 							if (part.type === 'text') return { type: 'text' as const, text: part.text ?? '' };
 							if ('image_url' in part && part.image_url?.url) {
-								return { type: 'image_url' as const, image_url: part.image_url.url };
+								return { type: 'image_url' as const, image_url: { url: part.image_url.url } };
 							}
 							if ('source' in part && part.source?.data) {
 								return {
 									type: 'image_url' as const,
-									image_url: `data:${part.source.media_type};base64,${part.source.data}`,
+									image_url: {
+										url: `data:${part.source.media_type};base64,${part.source.data}`,
+									},
 								};
 							}
 							return { type: 'text' as const, text: part.text ?? '' };
@@ -67,15 +69,20 @@ class ConnectedChatModelClient extends LLMClient {
 
 			switch (role) {
 				case 'system':
-					return new SystemMessage(mappedContent as never);
+					return new SystemMessage({ content: mappedContent as never });
 				case 'assistant':
-					return new AIMessage(mappedContent as never);
+					return new AIMessage({ content: mappedContent as never });
 				default:
-					return new HumanMessage(mappedContent as never);
+					return new HumanMessage({ content: mappedContent as never });
 			}
 		});
 
 		let model = this.model;
+		if (options.tools?.length && !model.bindTools) {
+			throw new ApplicationError(
+				'The connected Chat Model does not support tool calling required by Stagehand',
+			);
+		}
 		if (options.tools?.length && model.bindTools) {
 			model = model.bindTools(
 				options.tools.map((tool) => ({
@@ -124,11 +131,15 @@ class ConnectedChatModelClient extends LLMClient {
 			const usage = raw.usage_metadata;
 			return {
 				data: validation.data,
-				usage: {
-					prompt_tokens: usage?.input_tokens ?? 0,
-					completion_tokens: usage?.output_tokens ?? 0,
-					total_tokens: usage?.total_tokens ?? 0,
-				},
+				...(usage
+					? {
+							usage: {
+								prompt_tokens: usage.input_tokens,
+								completion_tokens: usage.output_tokens,
+								total_tokens: usage.total_tokens,
+							},
+						}
+					: {}),
 			} as T;
 		}
 
@@ -162,11 +173,15 @@ class ConnectedChatModelClient extends LLMClient {
 					finish_reason: toolCalls.length ? 'tool_calls' : 'stop',
 				},
 			],
-			usage: {
-				prompt_tokens: usage?.input_tokens ?? 0,
-				completion_tokens: usage?.output_tokens ?? 0,
-				total_tokens: usage?.total_tokens ?? 0,
-			},
+			...(usage
+				? {
+						usage: {
+							prompt_tokens: usage.input_tokens,
+							completion_tokens: usage.output_tokens,
+							total_tokens: usage.total_tokens,
+						},
+					}
+				: {}),
 		} as T;
 	}
 }
